@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion : 2010-09-09
+Description: "SQS queue which subscribes to a SNS topic based on a particular message type"
+Parameters: 
+  SNSTopicARN: 
+    Default: awsSNSTopicArn
+    Type: "AWS::SNS::TopicArn"
+  TopicRegion: 
+    Default: us-east-1
+    Type: String
+Resources: 
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+        - PolicyName: allowLambdaLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+              - logs:*
+              Resource: arn:aws:logs:*:*:*
+        - PolicyName: allowSqs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+              - sqs:ChangeMessageVisibility
+              Resource: !GetAtt MyQueue.Arn
+  
+  Queue: 
+    Type: "AWS::SQS::Queue"
+  SnsSubscription: 
+    Properties: 
+      Endpoint: Queue.Arn
+      Protocol: sqs
+      Region: TopicRegion
+      TopicArn: SNSTopicARN
+    Type: "AWS::SNS::Subscription"
+  SqsQueuePolicy: 
+    Properties: 
+      PolicyDocument: 
+        Id: MyQueuePolicy
+        Statement: 
+          - 
+            Action: 
+              - "sqs:SendMessage"
+            Condition: 
+              ArnEquals: 
+                ? "aws:SourceArn"
+                : SNSTopicARN
+            Effect: Allow
+            Principal: "*"
+            Resource: Queue.Arn
+            Sid: Allow-SNS-SendMessage
+        Version: "2012-10-17"
+      Queues: 
+        - Queue
+    Type: "AWS::SQS::QueuePolicy"
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      AccessControl: Private
+      LifecycleConfiguration:
+        Rules:
+          - Id: GlacierRule
+            Prefix: glacier
+            Status: Enabled
+            ExpirationInDays: 365
+            Transitions:
+              - TransitionInDays: 1
+                StorageClass: GLACIER
+      VersioningConfiguration:
+        Status: Enabled
+      Code:
+        S3Bucket: my-source-bucket
+        S3Key: lambda/my-nodejs-app.zip
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: nodejs8.10
+      Timeout: 60
+      MemorySize: 512
+
+  LambdaFunctionEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      Enabled: true
+      EventSourceArn: !GetAtt MyQueue.Arn
+      FunctionName: !GetAtt LambdaFunction.Arn
+
+  MyQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      DelaySeconds: 0
+      VisibilityTimeout: 120
